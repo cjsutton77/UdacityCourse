@@ -1,6 +1,7 @@
 import argparse
 import numpy as np
 import pandas as pd
+import json
 import matplotlib.pyplot as plt
 import torch
 from torch import nn
@@ -9,18 +10,44 @@ from torchvision import datasets, transforms, models
 from collections import OrderedDict
 import PIL
 import seaborn as sns
+import os
 
 parser = argparse.ArgumentParser()
 parser.add_argument("data_dir", help="directory with images")
-parser.add_argument("gpu",help="include GPU, True or False")
-parser.add_argument("arch",help="architecture- vgg16_bn or vgg19_bn")
+parser.add_argument("--arch", help="architecture, argument is vgg or dense, default is vgg.",default='vgg')
+parser.add_argument("--gpu" ,help="gpu available, argument is True or False", type=bool,default=False)
+parser.add_argument("--hl1" ,help="hidden layer 1, default is 512",type=int,default=512)
+parser.add_argument("--hl2" ,help="hidden layer 2, default is 256",type=int,default=256)
+parser.add_argument("--lr"  ,help="learning rate, default is .0003",type=float,default=0.0003)
+parser.add_argument("--e"   ,help="number of epochs, default is 10",type=int,default=10)
+parser.add_argument("--drop",help="dropout, default is 0.5",type=float,default=0.5)
 args = parser.parse_args()
+
+
+hl1 = args.hl1
+hl2 = args.hl2
+lr =  args.lr
+drop = args.drop
+structure = args.arch
 data_dir = args.data_dir
-gpu = args.gpu
-arch = args.arch
+e = args.e
+if args.gpu and torch.cuda.is_available():
+    device = torch.device('cuda')
+else:
+    device = torch.device('cpu')
 
+print(f'Device is {device}')
+print(f'Architechture is {structure}')
+print(f'Hidden layer 1 is {hl1}')
+print(f'Hidden layer 2 is {hl2}')
+print(f'Learning rate is {lr}')
+print(f'Dropout is {drop}')
+print(f'Training epochs is {e}')
 
-#data_dir = 'flowers'
+input("Please press enter to continue")
+    
+    
+#data_dir = f'{os.getcwd()}'
 train_dir = data_dir + '/train'
 valid_dir = data_dir + '/valid'
 test_dir = data_dir + '/test'
@@ -79,18 +106,31 @@ valid_dataloaders = torch.utils.data.DataLoader(valid_image_datasets,
                                                 batch_size=64,
                                                 shuffle=True)
 
-import json
-
 with open('cat_to_name.json', 'r') as f:
     cat_to_name = json.load(f)
     
-def network_vgg16(labels=102,drop=0.5, hidden1=512, hidden2=256,learn_rate=0.0001):
-    model = models.vgg16_bn(pretrained=True)
+    
+    
+def network(arch,labels=102,drop=0.5, hidden1=512, hidden2=256,learn_rate=0.0001):
+    '''
+    input:
+    labels (102 categories)
+    drop (default 0.5)
+    hidden layers 1 & 2
+    learning rate
+    
+    outputs model, critereon and optimizer
+    '''
+    if arch == 'vgg':
+        model = models.vgg19(pretrained=True)
+        input_size = 25088
+    else:
+        model = models.densenet121(pretrained=True)
+        input_size = 1024
     for p in model.parameters():
         p.requires_grad = False
         
     # Hyperparameters for our network
-    input_size = 25088
 
     # Build a feed-forward network
     classifier = nn.Sequential(nn.Linear(input_size, hidden1),
@@ -110,45 +150,18 @@ def network_vgg16(labels=102,drop=0.5, hidden1=512, hidden2=256,learn_rate=0.000
         model.classifier.parameters(),
         learn_rate)
 
-    model.cuda()
-
+    if args.gpu and torch.cuda.is_available():
+        model.cuda()
+    else:
+        model.cpu()
     return model, crit, optimize
 
-def network_vgg19(labels=102,drop=0.5, hidden1=512, hidden2=256,learn_rate=0.0001):
-    model = models.vgg19_bn(pretrained=True)
-    for p in model.parameters():
-        p.requires_grad = False
-        
-    # Hyperparameters for our network
-    input_size = 25088
 
-    # Build a feed-forward network
-    classifier = nn.Sequential(nn.Linear(input_size, hidden1),
-                               nn.ReLU(),
-                               nn.Dropout(drop),
-                               nn.Linear(hidden1, hidden2),
-                               nn.ReLU(),
-                               nn.Dropout(drop),
-                               nn.Linear(hidden2, labels),
-                               nn.LogSoftmax(dim=1))
 
-    model.classifier = classifier
+model,critereon,optimizer = network(structure,num_labels,drop=drop,hidden1=hl1,hidden2=hl2,learn_rate=lr)
 
-    crit = nn.NLLLoss()
-
-    optimize = optim.Adam(
-        model.classifier.parameters(),
-        learn_rate)
-
-    model.cuda()
-
-    return model, crit, optimize
-
-if arch == 'vgg16_bn':
-model,critereon,optimizer = network_vgg16(num_labels,drop=0.5,hidden1=1024,hidden2=512,learn_rate=0.0003)
-
-model.to('cuda')
-epochs = 10
+model.to(device)
+epochs = e
 print_every = 100
 steps = 0
 
@@ -159,8 +172,8 @@ for e in range(epochs):
     for _, (images, labels) in enumerate(train_dataloaders):
         steps += 1
         optimizer.zero_grad()
-        im = images.to('cuda')
-        lbl = labels.to('cuda')
+        im = images.to(device)
+        lbl = labels.to(device)
         # Forward and backward passes
         output = model.forward(im)
         loss = critereon(output, lbl)
@@ -177,8 +190,8 @@ for e in range(epochs):
             #      "Loss: {:.4f}".format(running_loss/print_every))
             for _,(images_validation,labels_validation) in enumerate(valid_dataloaders):
                 optimizer.zero_grad()
-                im_v  = images_validation.to('cuda')
-                lbl_v = labels_validation.to('cuda')
+                im_v  = images_validation.to(device)
+                lbl_v = labels_validation.to(device)
                 with torch.no_grad():
                     out_v  = model.forward(im_v)
                     loss_v = critereon(out_v,lbl_v)
@@ -198,6 +211,7 @@ for e in range(epochs):
             
 checkpoint = {'state_dict':model.state_dict(),
               'classifier': model.classifier,
+              'structure': structure,
               'class_to_idx':train_image_datasets.class_to_idx,
               'opt_state':optimizer.state_dict,
               'num_epochs':epochs
